@@ -11,12 +11,18 @@ use App\Services\TicketTypeService;
 use App\Models\TicketType;
 use Illuminate\Http\Request;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use Illuminate\Support\Facades\Cache;
 
 class TicketTypeController extends Controller
 {
     use AuthorizesRequests;
     
     protected TicketTypeService $ticketTypeService;
+
+    // Cache TTL in seconds
+    protected int $publicCacheTTL = 600; // 10 minutes
+    protected int $adminCacheTTL = 300; // 5 minutes
+    protected int $statsCacheTTL = 180; // 3 minutes
 
     public function __construct(TicketTypeService $ticketTypeService)
     {
@@ -37,11 +43,17 @@ class TicketTypeController extends Controller
         ]);
 
         $perPage = $request->get('per_page', 15);
-        $ticketTypes = $this->ticketTypeService->listTicketTypes($filters, $perPage);
+        
+        $cacheKey = $this->getCacheKey('ticket_types_list', $filters, $perPage);
+        
+        $ticketTypes = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($filters, $perPage) {
+            return $this->ticketTypeService->listTicketTypes($filters, $perPage);
+        });
 
         return response()->json([
             'success' => true,
             'data' => TicketTypeResource::collection($ticketTypes),
+            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -50,11 +62,16 @@ class TicketTypeController extends Controller
      */
     public function getByConcert(string $concertId)
     {
-        $ticketTypes = $this->ticketTypeService->getTicketTypesByConcert($concertId);
+        $cacheKey = $this->getCacheKey('ticket_types_by_concert', $concertId);
+        
+        $ticketTypes = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($concertId) {
+            return $this->ticketTypeService->getTicketTypesByConcert($concertId);
+        });
 
         return response()->json([
             'success' => true,
             'data' => TicketTypeResource::collection($ticketTypes),
+            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -63,11 +80,16 @@ class TicketTypeController extends Controller
      */
     public function getAvailableByConcert(string $concertId)
     {
-        $ticketTypes = $this->ticketTypeService->getAvailableTicketTypes($concertId);
+        $cacheKey = $this->getCacheKey('ticket_types_available', $concertId);
+        
+        $ticketTypes = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($concertId) {
+            return $this->ticketTypeService->getAvailableTicketTypes($concertId);
+        });
 
         return response()->json([
             'success' => true,
             'data' => TicketTypeResource::collection($ticketTypes),
+            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -77,11 +99,16 @@ class TicketTypeController extends Controller
     public function show(string $id)
     {
         try {
-            $ticketType = $this->ticketTypeService->findTicketTypeOrFail($id);
+            $cacheKey = $this->getCacheKey('ticket_type_detail', $id);
+            
+            $ticketType = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($id) {
+                return $this->ticketTypeService->findTicketTypeOrFail($id);
+            });
 
             return response()->json([
                 'success' => true,
                 'data' => new TicketTypeResource($ticketType),
+                'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
@@ -102,26 +129,37 @@ class TicketTypeController extends Controller
         ]);
 
         $quantity = $request->get('quantity', 1);
-        $available = $this->ticketTypeService->checkAvailability($id, $quantity);
-
-        try {
-            $ticketType = $this->ticketTypeService->findTicketTypeOrFail($id);
+        
+        $cacheKey = $this->getCacheKey('ticket_type_availability', $id, $quantity);
+        
+        $result = Cache::remember($cacheKey, 60, function () use ($id, $quantity) {
+            $available = $this->ticketTypeService->checkAvailability($id, $quantity);
             
-            return response()->json([
-                'success' => true,
-                'data' => [
+            try {
+                $ticketType = $this->ticketTypeService->findTicketTypeOrFail($id);
+                return [
                     'available' => $available,
                     'available_count' => $ticketType->capacity - $ticketType->sold_count,
                     'requested_quantity' => $quantity,
-                ],
-            ]);
+                    'ticket_type_id' => $id,
+                ];
+            } catch (\Exception $e) {
+                return null;
+            }
+        });
 
-        } catch (\Exception $e) {
+        if (!$result) {
             return response()->json([
                 'success' => false,
                 'message' => 'Ticket type not found',
             ], 404);
         }
+
+        return response()->json([
+            'success' => true,
+            'data' => $result,
+            'cached' => Cache::has($cacheKey),
+        ]);
     }
 
     // =============================================
@@ -140,11 +178,17 @@ class TicketTypeController extends Controller
         ]);
 
         $perPage = $request->get('per_page', 15);
-        $ticketTypes = $this->ticketTypeService->listTicketTypes($filters, $perPage);
+        
+        $cacheKey = $this->getCacheKey('ticket_types_admin', $filters, $perPage);
+        
+        $ticketTypes = Cache::remember($cacheKey, $this->adminCacheTTL, function () use ($filters, $perPage) {
+            return $this->ticketTypeService->listTicketTypes($filters, $perPage);
+        });
 
         return response()->json([
             'success' => true,
             'data' => TicketTypeResource::collection($ticketTypes),
+            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -158,6 +202,9 @@ class TicketTypeController extends Controller
         try {
             $data = $request->validated();
             $ticketType = $this->ticketTypeService->createTicketType($data);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             return response()->json([
                 'success' => true,
@@ -186,6 +233,9 @@ class TicketTypeController extends Controller
                 $data['concert_id'],
                 $data['ticket_types']
             );
+            
+            // Clear all ticket type caches
+            $this->clearAllTicketTypeCaches();
 
             return response()->json([
                 'success' => true,
@@ -212,6 +262,9 @@ class TicketTypeController extends Controller
 
             $data = $request->validated();
             $ticketType = $this->ticketTypeService->updateTicketType($ticketType, $data);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             return response()->json([
                 'success' => true,
@@ -238,6 +291,9 @@ class TicketTypeController extends Controller
 
             $force = $request->get('force', false);
             $result = $this->ticketTypeService->deleteTicketType($ticketType, $force);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             if (!$result['success']) {
                 return response()->json([
@@ -273,6 +329,9 @@ class TicketTypeController extends Controller
 
             $force = $request->get('force', false);
             $result = $this->ticketTypeService->deleteTicketTypeWithTickets($ticketType, $force);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             return response()->json([
                 'success' => true,
@@ -298,6 +357,9 @@ class TicketTypeController extends Controller
             $this->authorize('delete', $ticketType);
 
             $result = $this->ticketTypeService->softDeleteTicketType($ticketType);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             if (!$result['success']) {
                 return response()->json([
@@ -328,6 +390,9 @@ class TicketTypeController extends Controller
         try {
             $ticketType = $this->ticketTypeService->restoreTicketType($id);
             $this->authorize('restore', $ticketType);
+            
+            // Clear relevant caches
+            $this->clearTicketTypeCaches($ticketType);
 
             return response()->json([
                 'success' => true,
@@ -349,13 +414,18 @@ class TicketTypeController extends Controller
     public function statistics(string $id)
     {
         try {
-            
             $this->authorize('viewStatistics', TicketType::class);
-            $stats = $this->ticketTypeService->getTicketTypeStatistics($id);
+            
+            $cacheKey = $this->getCacheKey('ticket_type_statistics', $id);
+            
+            $stats = Cache::remember($cacheKey, $this->statsCacheTTL, function () use ($id) {
+                return $this->ticketTypeService->getTicketTypeStatistics($id);
+            });
 
             return response()->json([
                 'success' => true,
                 'data' => $stats,
+                'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
@@ -373,11 +443,17 @@ class TicketTypeController extends Controller
     {
         try {
             $this->authorize('viewStatistics', TicketType::class);
-            $analytics = $this->ticketTypeService->getSalesAnalytics($concertId);
+            
+            $cacheKey = $this->getCacheKey('ticket_type_analytics', $concertId);
+            
+            $analytics = Cache::remember($cacheKey, $this->statsCacheTTL, function () use ($concertId) {
+                return $this->ticketTypeService->getSalesAnalytics($concertId);
+            });
 
             return response()->json([
                 'success' => true,
                 'data' => $analytics,
+                'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
@@ -385,6 +461,106 @@ class TicketTypeController extends Controller
                 'success' => false,
                 'message' => 'Failed to get sales analytics: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    // =============================================
+    // CACHE HELPER METHODS
+    // =============================================
+
+    /**
+     * Generate cache key
+     */
+    private function getCacheKey(string $prefix, ...$params): string
+    {
+        $key = $prefix;
+        foreach ($params as $param) {
+            if (is_array($param)) {
+                ksort($param);
+                $key .= '_' . md5(json_encode($param));
+            } elseif (is_object($param)) {
+                $key .= '_' . md5(serialize($param));
+            } else {
+                $key .= '_' . (string) $param;
+            }
+        }
+        return $key;
+    }
+
+    /**
+     * Clear ticket type related caches
+     */
+    private function clearTicketTypeCaches($ticketType): void
+    {
+        try {
+            // Clear specific ticket type caches
+            Cache::forget($this->getCacheKey('ticket_type_detail', $ticketType->ticket_type_id ?? $ticketType->id));
+            Cache::forget($this->getCacheKey('ticket_type_statistics', $ticketType->ticket_type_id ?? $ticketType->id));
+            Cache::forget($this->getCacheKey('ticket_type_availability', $ticketType->ticket_type_id ?? $ticketType->id));
+            
+            // Clear concert-specific caches
+            if (isset($ticketType->concert_id)) {
+                Cache::forget($this->getCacheKey('ticket_types_by_concert', $ticketType->concert_id));
+                Cache::forget($this->getCacheKey('ticket_types_available', $ticketType->concert_id));
+                Cache::forget($this->getCacheKey('ticket_type_analytics', $ticketType->concert_id));
+            }
+            
+            // Clear list caches
+            Cache::forget('ticket_types_list');
+            Cache::forget('ticket_types_admin');
+            
+            // Clear pattern-based caches
+            $this->clearCacheByPattern('ticket_types_list_');
+            $this->clearCacheByPattern('ticket_types_admin_');
+            $this->clearCacheByPattern('ticket_types_by_concert_');
+            $this->clearCacheByPattern('ticket_types_available_');
+            
+        } catch (\Exception $e) {
+            \Log::warning('Failed to clear ticket type caches: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Clear all ticket type caches
+     */
+    private function clearAllTicketTypeCaches(): void
+    {
+        try {
+            // Clear specific keys
+            Cache::forget('ticket_types_list');
+            Cache::forget('ticket_types_admin');
+            
+            // Clear pattern-based caches
+            $this->clearCacheByPattern('ticket_types_list_');
+            $this->clearCacheByPattern('ticket_types_admin_');
+            $this->clearCacheByPattern('ticket_types_by_concert_');
+            $this->clearCacheByPattern('ticket_types_available_');
+            $this->clearCacheByPattern('ticket_type_detail_');
+            $this->clearCacheByPattern('ticket_type_statistics_');
+            $this->clearCacheByPattern('ticket_type_analytics_');
+            $this->clearCacheByPattern('ticket_type_availability_');
+            
+            \Log::info('All ticket type caches cleared');
+        } catch (\Exception $e) {
+            \Log::error('Failed to clear all ticket type caches: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Clear cache keys by pattern (Redis only)
+     */
+    private function clearCacheByPattern(string $pattern): void
+    {
+        if (Cache::getDefaultDriver() === 'redis') {
+            try {
+                $redis = Cache::store('redis')->getClient();
+                $keys = $redis->keys($pattern . '*');
+                if (!empty($keys)) {
+                    $redis->del($keys);
+                }
+            } catch (\Exception $e) {
+                \Log::warning('Could not clear cache by pattern: ' . $e->getMessage());
+            }
         }
     }
 }

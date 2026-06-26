@@ -25,7 +25,7 @@ class UpdateTicketTypeRequest extends FormRequest
         return [
             // Concert relationship (can be updated)
             'concert_id' => ['sometimes', 'string', 'uuid', 'exists:concerts,concert_id'],
-            
+             
             // Ticket type name
             'ticket_type_name' => ['sometimes', 'array'],
             'ticket_type_name.en' => ['sometimes', 'string', 'max:100'],

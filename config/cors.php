@@ -4,7 +4,7 @@
 
 return [ 
 
-    'paths' => ['api/*', 'v1/*', 'login', 'register'], 
+    'paths' => ['api/*','pay/*' ,'v1/*', 'login', 'register'], 
 
     'allowed_methods' => ['*'],
 
@@ -21,6 +21,6 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => true, // Keep this true if you're using cookies/sessions
+    'supports_credentials' => true,  
 
 ];

@@ -5,6 +5,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Http\Middleware\HandleCors;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -14,6 +15,17 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Add CORS middleware to API group (runs before everything else)
+        $middleware->api(prepend: [
+            HandleCors::class,
+        ]);
+        
+        // Add CORS to web group for payment callbacks
+        $middleware->web(prepend: [
+            HandleCors::class,
+        ]);
+        
+        // Register your custom middleware
         $middleware->alias([
             'role' => App\Http\Middleware\RoleMiddleware::class,
         ]);

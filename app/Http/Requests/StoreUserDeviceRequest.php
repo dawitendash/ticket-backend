@@ -16,8 +16,8 @@ class StoreUserDeviceRequest extends FormRequest
     {
         $rules = [
             'device_name' => ['nullable', 'string', 'max:255'],
-            'device_type' => ['nullable', 'string', Rule::in(['mobile', 'web', 'tablet', 'desktop', 'other'])],
-            'platform' => ['nullable', 'string', Rule::in(['ios', 'android', 'windows', 'mac', 'linux', 'web'])],
+            'device_type' => ['nullable', 'string'],
+            'platform' => ['nullable', 'string'],
             'device_token' => ['nullable', 'string', 'max:255'],
             'fcm_token' => ['nullable', 'string'],
             'is_trusted' => ['sometimes', 'boolean'],

@@ -261,7 +261,7 @@ class TicketService
                 'success' => true,
                 'message' => 'Ticket scanned successfully',
                 'status' => 'success',
-                'ticket' => $ticket->fresh(),
+                'ticket' => $ticket->fresh(['concert', 'ticketType', 'userInformation', 'user']),
                 'attendance_log' => $attendanceLog,
             ];
         });

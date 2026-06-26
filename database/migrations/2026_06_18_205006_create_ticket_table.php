@@ -16,8 +16,8 @@ return new class extends Migration
             $table->foreignUuid('ticket_type_id')->constrained('ticket_types', 'ticket_type_id');
             $table->foreignUuid('concert_id')->constrained('concerts', 'concert_id');
             $table->string('order_reference', 50)->unique();
-            $table->string('receipt_url')->nullabel();
-            $table->string('payment_status',['pending','success','failed']);
+            $table->string('receipt_url')->nullable();
+            $table->enum('payment_status',['pending','success','failed']);
             $table->string('qr_code', 500)->unique();
             $table->string('ticket_number', 50)->unique();
             $table->decimal('price_paid', 15, 2);

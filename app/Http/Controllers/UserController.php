@@ -24,7 +24,7 @@ class UserController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $users = $this->service->list(
+        $users = $this->service->listUsers(   
             $request->all(),
             $request->integer('per_page', 15)
         );
@@ -36,9 +36,9 @@ class UserController extends Controller
      */
     public function store(StoreUserRequest $request): JsonResponse
     {
-        $user = $this->service->create($request->validated());
+        $user = $this->service->createUser($request->validated());  
 
-        return (new UserResource($user->load('roles')))
+        return (new UserResource($user->load('role')))
             ->response()
             ->setStatusCode(201);
     }
@@ -48,7 +48,7 @@ class UserController extends Controller
      */
     public function show(User $user): UserResource
     {
-        return new UserResource($user->load('roles'));
+        return new UserResource($user->load('role'));
     }
 
     /**
@@ -56,9 +56,9 @@ class UserController extends Controller
      */
     public function update(UpdateUserRequest $request, User $user): UserResource
     {
-        $updatedUser = $this->service->update($user, $request->validated());
+        $updatedUser = $this->service->updateUser($user, $request->validated()); 
 
-        return new UserResource($updatedUser->load('roles'));
+        return new UserResource($updatedUser->load('role'));
     }
 
     /**
@@ -90,9 +90,7 @@ class UserController extends Controller
             unset($data['profile_picture']);
         }
 
-        $updatedUser = $this->service->update($user, $data)->load(['roles' => function ($query) {
-            $query->wherePivot('status', 1);
-        }]);
+        $updatedUser = $this->service->updateUser($user, $data);  
 
         return response()->json([
             'data' => new \App\Http\Resources\AuthenticatedUserResource($updatedUser),
@@ -105,7 +103,7 @@ class UserController extends Controller
      */
     public function destroy(User $user): JsonResponse
     {
-        $this->service->delete($user);
+        $this->service->deleteUser($user); 
 
         return response()->json(null, 204);
     }
@@ -129,13 +127,8 @@ class UserController extends Controller
             ], 403);
         }
 
-        // Store the context in session (or update user meta)
         session(['current_service_provider_id' => $newProviderId]);
 
-        // (Optional) Also store in a database column if you want persistence across devices
-        // $user->update(['default_service_provider_id' => $newProviderId]);
-
-        // Return fresh permissions and modules for the new context
         return response()->json([
             'current_service_provider' => $newProviderId,
             'permissions' => $user->getAllPermissions($newProviderId),

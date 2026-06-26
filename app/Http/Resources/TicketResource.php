@@ -43,7 +43,7 @@ class TicketResource extends JsonResource
             'active' => 'green',
             'used' => 'blue',
             'cancelled' => 'red',
-            'refunded' => 'orange',
+            'refunded' => 'blue',
         ];
         return $colors[$this->status] ?? 'gray';
     }

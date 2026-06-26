@@ -39,7 +39,7 @@ class AttendanceLogResource extends JsonResource
             'success' => 'green',
             'already_used' => 'yellow',
             'invalid' => 'red',
-            'expired' => 'orange',
+            'expired' => 'blue',
         ];
         return $colors[$this->status] ?? 'gray';
     }

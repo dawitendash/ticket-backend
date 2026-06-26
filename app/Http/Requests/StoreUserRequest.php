@@ -26,8 +26,7 @@ class StoreUserRequest extends FormRequest
            
             'user_name' => ['required', 'string', 'max:255', 'unique:users,user_name', 'regex:/^[a-zA-Z0-9_]+$/'],
             'email' => ['nullable', 'string', 'email', 'max:255', 'unique:users,email'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
-            'password_confirmation' => ['required', 'string', 'min:8'],
+            'password' => ['required', 'string', 'min:8'], 
             
             // Profile information
             'profile_name' => ['required', 'array'],

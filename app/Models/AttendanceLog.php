@@ -147,7 +147,7 @@ class AttendanceLog extends Model
             'success' => 'green',
             'already_used' => 'yellow',
             'invalid' => 'red',
-            'expired' => 'orange',
+            'expired' => 'blue',
         ];
         return $colors[$this->status] ?? 'gray';
     }
