@@ -36,9 +36,12 @@ Route::prefix('concerts')->group(function () {
 });
 
 // Payment
-Route::post('pay/chapa', [ChapaController::class, 'initialize']);
-Route::get('pay/chapa/callback/{tx_ref}', [ChapaController::class, 'callback'])->name('chapa.callback');
-Route::get('pay/chapa/verify/{tx_ref}', [ChapaController::class, 'verify']);
+Route::prefix('pay')->group(function () {
+    Route::post('/chapa', [ChapaController::class, 'initialize']);
+    Route::get('/chapa/verify/{tx_ref}', [ChapaController::class, 'verify']);
+     Route::get('/chapa/callback/{tx_ref}', [ChapaController::class, 'callback'])
+        ->name('chapa.callback');
+});
 
 Route::prefix('ticket-types')->group(function () {
     Route::get('/', [TicketTypeController::class, 'index']);

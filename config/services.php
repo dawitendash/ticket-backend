@@ -33,6 +33,12 @@ return [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
+        
     ],
+    'chapa' => [
+        'api_url' => env('CHAPA_API_URL', 'https://api.chapa.co/v1'),
+        'secret_key' => env('CHAPA_SECRET_KEY'),
+        'webhook_hash' => env('CHAPA_WEBHOOK_HASH'),
+],
 
 ];

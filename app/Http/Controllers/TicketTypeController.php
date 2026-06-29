@@ -44,16 +44,16 @@ class TicketTypeController extends Controller
 
         $perPage = $request->get('per_page', 15);
         
-        $cacheKey = $this->getCacheKey('ticket_types_list', $filters, $perPage);
+        // $cacheKey = $this->getCacheKey('ticket_types_list', $filters, $perPage);
         
-        $ticketTypes = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($filters, $perPage) {
-            return $this->ticketTypeService->listTicketTypes($filters, $perPage);
-        });
+        //$ticketTypes = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($filters, $perPage) {
+            $ticketTypes =  $this->ticketTypeService->listTicketTypes($filters, $perPage);
+       // });
 
         return response()->json([
             'success' => true,
             'data' => TicketTypeResource::collection($ticketTypes),
-            'cached' => Cache::has($cacheKey),
+          //  'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -99,16 +99,16 @@ class TicketTypeController extends Controller
     public function show(string $id)
     {
         try {
-            $cacheKey = $this->getCacheKey('ticket_type_detail', $id);
+            //$cacheKey = $this->getCacheKey('ticket_type_detail', $id);
             
-            $ticketType = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($id) {
-                return $this->ticketTypeService->findTicketTypeOrFail($id);
-            });
+           // $ticketType = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($id) {
+               $ticketType =  $this->ticketTypeService->findTicketTypeOrFail($id);
+           // });
 
             return response()->json([
                 'success' => true,
                 'data' => new TicketTypeResource($ticketType),
-                'cached' => Cache::has($cacheKey),
+              //  'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
