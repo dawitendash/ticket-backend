@@ -10,19 +10,12 @@ use App\Models\Ticket;
 use App\Services\TicketService;
 use Illuminate\Http\Request;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
-use Illuminate\Support\Facades\Cache;
 
 class TicketController extends Controller
 {
     use AuthorizesRequests;
     
     protected TicketService $service;
-
-    // Cache TTL in seconds
-    protected int $publicCacheTTL = 300; // 5 minutes
-    protected int $userCacheTTL = 120; // 2 minutes
-    protected int $adminCacheTTL = 600; // 10 minutes
-    protected int $scannerCacheTTL = 60; // 1 minute
 
     public function __construct(TicketService $service)
     {
@@ -44,16 +37,11 @@ class TicketController extends Controller
 
         $perPage = $request->integer('per_page', 15);
         
-        $cacheKey = $this->getCacheKey('tickets_list', $filters, $perPage);
-        
-        $tickets = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($filters, $perPage) {
-            return $this->service->listTickets($filters, $perPage);
-        });
+        $tickets = $this->service->listTickets($filters, $perPage);
 
         return response()->json([
             'success' => true,
             'data' => TicketResource::collection($tickets),
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -71,16 +59,11 @@ class TicketController extends Controller
             ], 401);
         }
 
-        $cacheKey = $this->getCacheKey('user_tickets', $user->user_id);
-        
-        $tickets = Cache::remember($cacheKey, $this->userCacheTTL, function () use ($user) {
-            return $this->service->getUserTickets($user->user_id);
-        });
+        $tickets = $this->service->getUserTickets($user->user_id);
 
         return response()->json([
             'success' => true,
             'data' => TicketResource::collection($tickets),
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -98,16 +81,11 @@ class TicketController extends Controller
             ], 401);
         }
 
-        $cacheKey = $this->getCacheKey('user_active_tickets', $user->user_id);
-        
-        $tickets = Cache::remember($cacheKey, $this->userCacheTTL, function () use ($user) {
-            return $this->service->getUserActiveTickets($user->user_id);
-        });
+        $tickets = $this->service->getUserActiveTickets($user->user_id);
 
         return response()->json([
             'success' => true,
             'data' => TicketResource::collection($tickets),
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -117,18 +95,12 @@ class TicketController extends Controller
     public function show(string $id)
     {
         try {
-            $cacheKey = $this->getCacheKey('ticket_detail', $id);
-            
-            $ticket = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($id) {
-                return $this->service->findTicketOrFail($id);
-            });
-            
+            $ticket = $this->service->findTicketOrFail($id);
             $this->authorize('view', $ticket);
 
             return response()->json([
                 'success' => true,
                 'data' => new TicketResource($ticket),
-                'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
@@ -148,11 +120,7 @@ class TicketController extends Controller
             'qr_code' => ['required', 'string'],
         ]);
 
-        $cacheKey = $this->getCacheKey('ticket_by_qr', md5($request->qr_code));
-        
-        $ticket = Cache::remember($cacheKey, $this->publicCacheTTL, function () use ($request) {
-            return $this->service->findByQrCode($request->qr_code);
-        });
+        $ticket = $this->service->findByQrCode($request->qr_code);
 
         if (!$ticket) {
             return response()->json([
@@ -166,7 +134,6 @@ class TicketController extends Controller
         return response()->json([
             'success' => true,
             'data' => new TicketResource($ticket),
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -187,16 +154,11 @@ class TicketController extends Controller
 
         $perPage = $request->integer('per_page', 15);
         
-        $cacheKey = $this->getCacheKey('tickets_admin_list', $filters, $perPage);
-        
-        $tickets = Cache::remember($cacheKey, $this->adminCacheTTL, function () use ($filters, $perPage) {
-            return $this->service->listTickets($filters, $perPage);
-        });
+        $tickets = $this->service->listTickets($filters, $perPage);
 
         return response()->json([
             'success' => true,
             'data' => TicketResource::collection($tickets),
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -210,9 +172,6 @@ class TicketController extends Controller
         try {
             $data = $request->validated();
             $ticket = $this->service->createTicket($data);
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -245,9 +204,6 @@ class TicketController extends Controller
 
         try {
             $tickets = $this->service->bulkCreateTickets($request->tickets);
-            
-            // Clear all ticket caches
-            $this->clearAllTicketCaches();
 
             return response()->json([
                 'success' => true,
@@ -274,9 +230,6 @@ class TicketController extends Controller
 
             $data = $request->validated();
             $ticket = $this->service->updateTicket($ticket, $data);
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -302,9 +255,6 @@ class TicketController extends Controller
             $this->authorize('update', $ticket);
 
             $ticket->markAsCancelled();
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -330,9 +280,6 @@ class TicketController extends Controller
             $this->authorize('update', $ticket);
 
             $ticket->markAsRefunded();
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -359,9 +306,6 @@ class TicketController extends Controller
 
             $force = $request->get('force', false);
             $this->service->deleteTicket($ticket, $force);
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -385,9 +329,6 @@ class TicketController extends Controller
             $this->authorize('restore', Ticket::class);
             
             $ticket = $this->service->restoreTicket($id);
-            
-            // Clear relevant caches
-            $this->clearTicketCaches($ticket);
 
             return response()->json([
                 'success' => true,
@@ -412,16 +353,11 @@ class TicketController extends Controller
 
         $concertId = $request->get('concert_id');
         
-        $cacheKey = $this->getCacheKey('ticket_statistics', $concertId ?? 'all');
-        
-        $stats = Cache::remember($cacheKey, $this->adminCacheTTL, function () use ($concertId) {
-            return $this->service->getStatistics($concertId);
-        });
+        $stats = $this->service->getStatistics($concertId);
 
         return response()->json([
             'success' => true,
             'data' => $stats,
-            'cached' => Cache::has($cacheKey),
         ]);
     }
 
@@ -451,12 +387,6 @@ class TicketController extends Controller
                 $deviceId,
                 $gateNumber
             );
-
-            // Clear caches on successful scan
-            if ($result['success'] && isset($result['ticket'])) {
-                $this->clearTicketCaches($result['ticket']);
-                $this->clearScannerCaches($scannerId);
-            }
 
             if (!$result['success']) {
                 return response()->json([
@@ -496,11 +426,7 @@ class TicketController extends Controller
         ]);
 
         try {
-            $cacheKey = $this->getCacheKey('ticket_validation', md5($request->qr_code));
-            
-            $result = Cache::remember($cacheKey, $this->scannerCacheTTL, function () use ($request) {
-                return $this->service->validateTicket($request->qr_code);
-            });
+            $result = $this->service->validateTicket($request->qr_code);
 
             if (!$result['success']) {
                 return response()->json([
@@ -515,7 +441,6 @@ class TicketController extends Controller
                 'success' => true,
                 'message' => $result['message'],
                 'data' => new TicketResource($result['ticket']),
-                'cached' => Cache::has($cacheKey),
             ]);
 
         } catch (\Exception $e) {
@@ -523,122 +448,6 @@ class TicketController extends Controller
                 'success' => false,
                 'message' => 'Failed to validate ticket: ' . $e->getMessage(),
             ], 500);
-        }
-    }
-
-    // =============================================
-    // CACHE HELPER METHODS
-    // =============================================
-
-    /**
-     * Generate cache key
-     */
-    private function getCacheKey(string $prefix, ...$params): string
-    {
-        $key = $prefix;
-        foreach ($params as $param) {
-            if (is_array($param)) {
-                ksort($param);
-                $key .= '_' . md5(json_encode($param));
-            } elseif (is_object($param)) {
-                $key .= '_' . md5(serialize($param));
-            } else {
-                $key .= '_' . (string) $param;
-            }
-        }
-        return $key;
-    }
-
-    /**
-     * Clear ticket-related caches
-     */
-    private function clearTicketCaches($ticket): void
-    {
-        try {
-            // Clear specific ticket caches
-            Cache::forget($this->getCacheKey('ticket_detail', $ticket->ticket_id ?? $ticket->id));
-            Cache::forget($this->getCacheKey('ticket_by_qr', md5($ticket->qr_code ?? '')));
-            
-            // Clear user ticket caches
-            if (isset($ticket->user_id)) {
-                Cache::forget($this->getCacheKey('user_tickets', $ticket->user_id));
-                Cache::forget($this->getCacheKey('user_active_tickets', $ticket->user_id));
-            }
-            
-            // Clear list caches
-            Cache::forget('tickets_list');
-            Cache::forget('tickets_admin_list');
-            Cache::forget('ticket_statistics');
-            
-            // Clear validation cache
-            if (isset($ticket->qr_code)) {
-                Cache::forget($this->getCacheKey('ticket_validation', md5($ticket->qr_code)));
-            }
-            
-            // Clear pattern-based caches
-            $this->clearCacheByPattern('tickets_list_');
-            $this->clearCacheByPattern('tickets_admin_list_');
-            
-        } catch (\Exception $e) {
-            \Log::warning('Failed to clear ticket caches: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Clear all ticket caches
-     */
-    private function clearAllTicketCaches(): void
-    {
-        try {
-            // Clear specific keys
-            Cache::forget('tickets_list');
-            Cache::forget('tickets_admin_list');
-            Cache::forget('ticket_statistics');
-            
-            // Clear pattern-based caches
-            $this->clearCacheByPattern('tickets_list_');
-            $this->clearCacheByPattern('tickets_admin_list_');
-            $this->clearCacheByPattern('ticket_detail_');
-            $this->clearCacheByPattern('ticket_by_qr_');
-            $this->clearCacheByPattern('user_tickets_');
-            $this->clearCacheByPattern('user_active_tickets_');
-            $this->clearCacheByPattern('ticket_validation_');
-            
-            \Log::info('All ticket caches cleared');
-        } catch (\Exception $e) {
-            \Log::error('Failed to clear all ticket caches: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Clear scanner caches
-     */
-    private function clearScannerCaches(string $scannerId): void
-    {
-        try {
-            $this->clearCacheByPattern('scanner_history_' . $scannerId);
-            $this->clearCacheByPattern('scanner_today_' . $scannerId);
-            $this->clearCacheByPattern('scanner_stats_' . $scannerId);
-        } catch (\Exception $e) {
-            \Log::warning('Failed to clear scanner caches: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Clear cache keys by pattern (Redis only)
-     */
-    private function clearCacheByPattern(string $pattern): void
-    {
-        if (Cache::getDefaultDriver() === 'redis') {
-            try {
-                $redis = Cache::store('redis')->getClient();
-                $keys = $redis->keys($pattern . '*');
-                if (!empty($keys)) {
-                    $redis->del($keys);
-                }
-            } catch (\Exception $e) {
-                \Log::warning('Could not clear cache by pattern: ' . $e->getMessage());
-            }
         }
     }
 }

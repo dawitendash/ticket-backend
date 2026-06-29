@@ -10,7 +10,6 @@ use App\Models\TicketType;
 use App\Models\UserInformation;  
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Hash;  
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str; 
 use App\Services\UserInformationService;
 use Illuminate\Support\Facades\Storage;
@@ -43,8 +42,8 @@ class ChapaController extends Controller
                 'address' => 'required|string',
                 'device_id' => 'required|string', 
                 'national_id_number' => 'nullable|string',
-                'national_id_front_image' => 'nullable|string',
-                'national_id_back_image' => 'nullable|string',
+                'national_id_front_image' => 'nullable|file|image|max:5120', // 5MB max
+                'national_id_back_image' => 'nullable|file|image|max:5120', // 5MB max
                 'email' => 'nullable|email|max:255',
             ]);
 
@@ -81,19 +80,6 @@ class ChapaController extends Controller
 
             // Generate unique transaction reference
             $tx_ref = 'TK-' . time() . strtoupper(Str::random(6));
-            
-            // Create ticket with proper data
-            $ticket = Ticket::create([
-                'ticket_type_id' => $request->ticket_type_id, 
-                'device_id' => $request->device_id,
-                'order_reference' => $tx_ref,
-                'payment_status' => 'pending',   
-                'concert_id' => $ticketType->concert_id,
-                'price_paid' => $ticketType->price,
-                'purchase_date' => now(),
-                'status' => 'active',
-                'user_information_id' => $user->id, 
-            ]);
 
             // Prepare email - ensure it's valid
             $email = $request->email;
@@ -121,11 +107,23 @@ class ChapaController extends Controller
 
             // Skip Chapa for local testing if enabled
             if (env('SKIP_CHAPA', false) && app()->environment('local')) {
-                $ticket->update([
+                // Create ticket only after successful payment
+                $ticket = Ticket::create([
+                    'ticket_type_id' => $request->ticket_type_id, 
+                    'device_id' => $request->device_id,
+                    'order_reference' => $tx_ref,
                     'payment_status' => 'success',
+                    'concert_id' => $ticketType->concert_id,
+                    'price_paid' => $ticketType->price,
+                    'purchase_date' => now(),
                     'status' => 'active',
+                    'user_information_id' => $user->id,
+                    'ticket_code' => $this->generateTicketCode(),
                     'payment_date' => now(),
                 ]);
+                
+                // Decrease available tickets
+                $ticketType->decrement('available_tickets');
                 
                 DB::commit();
                 
@@ -151,7 +149,30 @@ class ChapaController extends Controller
                 $responseData = $response->json();
                 
                 if (isset($responseData['data']['checkout_url'])) {
-                    // Commit transaction - keep ticket and user
+                    // Store pending payment in database instead of cache
+                    $pendingPayment = [
+                        'ticket_type_id' => $request->ticket_type_id,
+                        'device_id' => $request->device_id,
+                        'concert_id' => $ticketType->concert_id,
+                        'price_paid' => $ticketType->price,
+                        'user_information_id' => $user->id,
+                        'tx_ref' => $tx_ref,
+                        'created_at' => now()
+                    ];
+                    
+                    // Store in a pending_payments table or use a database approach
+                    // For now, we'll store in a JSON file or use a database table
+                    // Option 1: Create a pending_payments table
+                    // Option 2: Store in session
+                    // Option 3: Store in database with a cleanup job
+                    
+                    // Using database approach - you'll need to create a PendingPayment model
+                    // \App\Models\PendingPayment::create($pendingPayment);
+                    
+                    // For now, we'll store in session as a temporary solution
+                    session(['pending_payment_' . $tx_ref => $pendingPayment]);
+                    
+                    // Commit only user registration
                     DB::commit();
                     
                     return response()->json([
@@ -163,7 +184,7 @@ class ChapaController extends Controller
                         ]
                     ]);
                 } else {
-                    // Chapa returned success but missing checkout_url - rollback
+                    // Chapa returned success but missing checkout_url - rollback user
                     DB::rollBack();
                     
                     return response()->json([
@@ -174,7 +195,7 @@ class ChapaController extends Controller
                 }
             }
 
-            // Chapa API failed - rollback
+            // Chapa API failed - rollback user
             DB::rollBack();
 
             $errorMessage = 'Payment initialization failed';
@@ -224,40 +245,40 @@ class ChapaController extends Controller
     }
 
     /**
-     * Store base64 image to public directory
+     * Store uploaded file to public directory
      */
-    private function storeBase64Image($base64Image, $prefix = 'national_id')
+    private function storeUploadedFile($file, $prefix = 'national_id')
     {
-        if (empty($base64Image)) {
+        if (!$file) {
             return null;
         }
         
         try {
-            if (!preg_match('/^data:image\/(\w+);base64,/', $base64Image, $matches)) {
-                return null;
-            }
+            // Generate unique filename
+            $extension = $file->getClientOriginalExtension();
+            $filename = $prefix . '_' . time() . '_' . Str::random(10) . '.' . $extension;
             
-            $imageType = $matches[1];
-            $imageData = substr($base64Image, strpos($base64Image, ',') + 1);
-            $imageData = base64_decode($imageData);
+            // Define the path relative to public directory
+            $relativePath = 'uploads/national_ids/' . $filename;
+            $fullPath = public_path($relativePath);
             
-            if ($imageData === false) {
-                return null;
-            }
-            
-            $filename = $prefix . '_' . time() . '_' . Str::random(10) . '.' . $imageType;
-            $directory = public_path('uploads/national_ids');
-            
+            // Create directory if it doesn't exist
+            $directory = dirname($fullPath);
             if (!file_exists($directory)) {
                 mkdir($directory, 0755, true);
             }
             
-            $path = $directory . '/' . $filename;
-            file_put_contents($path, $imageData);
+            // Move the uploaded file
+            $file->move($directory, $filename);
             
-            return '/uploads/national_ids/' . $filename;
+            // Return the public path
+            return '/' . $relativePath;
             
         } catch (\Exception $e) {
+            Log::error('File upload failed:', [
+                'message' => $e->getMessage(),
+                'prefix' => $prefix
+            ]);
             return null;
         }
     }
@@ -271,6 +292,26 @@ class ChapaController extends Controller
             $user = UserInformation::where('phone_number', $request->phone_number)->first();
             
             if ($user) {
+                // Update existing user's images if new ones are uploaded
+                if ($request->hasFile('national_id_front_image')) {
+                    $this->deleteUserImage($user->national_id_front_image);
+                    $frontImagePath = $this->storeUploadedFile($request->file('national_id_front_image'), 'front');
+                    if ($frontImagePath) {
+                        $user->national_id_front_image = $frontImagePath;
+                    }
+                }
+                
+                if ($request->hasFile('national_id_back_image')) {
+                    $this->deleteUserImage($user->national_id_back_image);
+                    $backImagePath = $this->storeUploadedFile($request->file('national_id_back_image'), 'back');
+                    if ($backImagePath) {
+                        $user->national_id_back_image = $backImagePath;
+                    }
+                }
+                
+                // Update other fields if needed
+                $user->save();
+                
                 return $user;
             }
             
@@ -284,8 +325,17 @@ class ChapaController extends Controller
                 'am' => $request->address
             ];
             
-            $frontImagePath = $this->storeBase64Image($request->national_id_front_image, 'front');
-            $backImagePath = $this->storeBase64Image($request->national_id_back_image, 'back');
+            // Store uploaded files
+            $frontImagePath = null;
+            $backImagePath = null;
+            
+            if ($request->hasFile('national_id_front_image')) {
+                $frontImagePath = $this->storeUploadedFile($request->file('national_id_front_image'), 'front');
+            }
+            
+            if ($request->hasFile('national_id_back_image')) {
+                $backImagePath = $this->storeUploadedFile($request->file('national_id_back_image'), 'back');
+            }
             
             $user = UserInformation::create([
                 'full_name' => json_encode($fullName),
@@ -310,7 +360,39 @@ class ChapaController extends Controller
     }
 
     /**
-     * Verify Chapa payment - NO ROLLBACK HERE (just checking status)
+     * Delete a single user image
+     */
+    private function deleteUserImage($imagePath): void
+    {
+        if (!$imagePath) {
+            return;
+        }
+        
+        try {
+            $fullPath = public_path($imagePath);
+            if (file_exists($fullPath)) {
+                unlink($fullPath);
+                Log::info('Deleted user image:', ['path' => $imagePath]);
+            }
+        } catch (\Exception $e) {
+            Log::error('Failed to delete user image:', [
+                'path' => $imagePath,
+                'message' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Delete user images from storage
+     */
+    private function deleteUserImages(UserInformation $user): void
+    {
+        $this->deleteUserImage($user->national_id_front_image);
+        $this->deleteUserImage($user->national_id_back_image);
+    }
+
+    /**
+     * Verify Chapa payment - Creates ticket only on successful payment
      */
     public function verify(string $tx_ref)
     {
@@ -332,39 +414,84 @@ class ChapaController extends Controller
             }
 
             $payment = $data['data'] ?? [];
-            $ticket = Ticket::where('order_reference', $tx_ref)->first();
-
-            if (isset($payment['status']) && $payment['status'] === 'success' && $ticket && $ticket->payment_status !== 'success') {
-                $reference = $payment['reference'] ?? null;
-                $ticket->update([
-                    'payment_status' => 'success',
-                    'receipt_url' => $reference ? 'https://chapa.link/payment-receipt/' . $reference : $ticket->receipt_url,
-                    'status' => 'active',
-                    'payment_date' => now(),
-                    'chapa_reference' => $reference,
-                ]);
-
-                $ticketType = TicketType::where('ticket_type_id', $ticket->ticket_type_id)->first();
-                if ($ticketType && $ticketType->available_tickets > 0) {
-                    $ticketType->decrement('available_tickets');
+            
+            // Check if payment is successful
+            if (isset($payment['status']) && $payment['status'] === 'success') {
+                // Check if ticket already exists
+                $ticket = Ticket::where('order_reference', $tx_ref)->first();
+                
+                if (!$ticket) {
+                    // Get pending payment data from session
+                    $pendingData = session('pending_payment_' . $tx_ref);
+                    
+                    if (!$pendingData) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Payment data expired or not found. Please contact support.',
+                        ], 404);
+                    }
+                    
+                    // Create ticket only now
+                    DB::beginTransaction();
+                    try {
+                        $ticket = Ticket::create([
+                            'ticket_type_id' => $pendingData['ticket_type_id'],
+                            'device_id' => $pendingData['device_id'],
+                            'order_reference' => $tx_ref,
+                            'payment_status' => 'success',
+                            'concert_id' => $pendingData['concert_id'],
+                            'price_paid' => $pendingData['price_paid'],
+                            'purchase_date' => now(),
+                            'status' => 'active',
+                            'user_information_id' => $pendingData['user_information_id'],
+                            'ticket_code' => $this->generateTicketCode(),
+                            'payment_date' => now(),
+                            'chapa_reference' => $payment['reference'] ?? null,
+                            'receipt_url' => isset($payment['reference']) ? 'https://chapa.link/payment-receipt/' . $payment['reference'] : null,
+                        ]);
+                        
+                        // Decrease available tickets
+                        $ticketType = TicketType::where('ticket_type_id', $pendingData['ticket_type_id'])->first();
+                        if ($ticketType && $ticketType->available_tickets > 0) {
+                            $ticketType->decrement('available_tickets');
+                        }
+                        
+                        // Remove pending data from session
+                        session()->forget('pending_payment_' . $tx_ref);
+                        
+                        DB::commit();
+                    } catch (\Exception $e) {
+                        DB::rollBack();
+                        throw $e;
+                    }
                 }
-
-                $this->clearDashboardCache($ticket->concert_id);
                 
                 return response()->json([
                     'success' => true,
                     'message' => 'Payment verified successfully',
-                    'data' => $payment
+                    'data' => [
+                        'ticket' => $ticket,
+                        'payment' => $payment
+                    ]
                 ]);
             }
 
+            // Payment not successful - clean up any pending data
+            session()->forget('pending_payment_' . $tx_ref);
+            
             return response()->json([
                 'success' => false,
-                'message' => $payment['status'] === 'success' ? 'Payment already processed' : 'Payment not successful',
+                'message' => 'Payment not successful',
                 'data' => $payment
             ]);
 
         } catch (\Exception $e) {
+            Log::error('Payment verification exception:', [
+                'tx_ref' => $tx_ref,
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Payment verification failed: ' . $e->getMessage(),
@@ -373,34 +500,10 @@ class ChapaController extends Controller
     }
 
     /**
-     * Clear dashboard cache
-     */
-    private function clearDashboardCache(?string $concertId = null): void
-    {
-        try {
-            Cache::forget('dashboard:admin');
-            Cache::forget('dashboard:charts:week');
-            Cache::forget('dashboard:charts:month');
-            Cache::forget('dashboard:charts:year');
-            Cache::forget('dashboard:scanner:current');
-
-            if ($concertId) {
-                Cache::forget('dashboard:concert:' . $concertId);
-                Cache::forget('dashboard:scanner:' . $concertId);
-            }
-        } catch (\Exception $e) {
-            Log::error('Failed to clear cache:', ['message' => $e->getMessage()]);
-        }
-    }
-
-    /**
-     * Handle Chapa callback - WITH ROLLBACK ON FAILURE
+     * Handle Chapa callback - Creates ticket only on successful payment
      */
     public function callback(Request $request, $tx_ref)
     {
-        // Start transaction for rollback
-        DB::beginTransaction();
-        
         try {
             // Verify Chapa signature (webhook security)
             $chapaSignature = $request->header('x-chapa-signature');
@@ -408,7 +511,6 @@ class ChapaController extends Controller
 
             if (app()->environment('production') && $chapaSignature) {
                 if ($chapaSignature !== $localHash) {
-                    DB::rollBack();
                     return response()->json(['message' => 'Unauthorized'], 401);
                 }
             }
@@ -427,101 +529,76 @@ class ChapaController extends Controller
                 $chapaInternalRef = $data['data']['reference'] ?? 'NOT_FOUND';
                 $officialReceiptUrl = "https://chapa.link/payment-receipt/" . $chapaInternalRef;
 
+                // Check if ticket already exists
                 $ticket = Ticket::where('order_reference', $tx_ref)->first();
 
-                if ($ticket) {
-                    // Update ticket to confirmed status
-                    $ticket->update([
-                        'payment_status' => 'success',
-                        'receipt_url' => $officialReceiptUrl,
-                        'status' => 'active',
-                        'payment_date' => now(),
-                        'chapa_reference' => $chapaInternalRef,
-                    ]);
+                if (!$ticket) {
+                    // Get pending payment data from session
+                    $pendingData = session('pending_payment_' . $tx_ref);
                     
-                    $this->clearDashboardCache($ticket->concert_id);
-                    
-                    // Decrease ticket quantity in TicketType
-                    $ticketType = TicketType::where('ticket_type_id', $ticket->ticket_type_id)->first();
-                    if ($ticketType && $ticketType->available_tickets > 0) {
-                        $ticketType->decrement('available_tickets');
+                    if (!$pendingData) {
+                        return view('payment_result', [
+                            'status' => 'failed',
+                            'message' => 'Payment data expired or not found. Please contact support.',
+                            'ticket_id' => null,
+                            'receipt_url' => $officialReceiptUrl
+                        ]);
                     }
-
-                    // Commit transaction - keep everything
-                    DB::commit();
-
-                    return view('payment_result', [
-                        'status' => 'success',
-                        'ticket' => $ticket,
-                        'ticket_id' => $ticket->ticket_code,
-                        'receipt_url' => $officialReceiptUrl,
-                        'message' => 'Payment completed successfully!'
-                    ]);
-
-                } else {
-                    // Ticket not found - rollback
-                    DB::rollBack();
                     
-                    return view('payment_result', [
-                        'status' => 'success',
-                        'message' => 'Payment successful but ticket record not found. Please contact support.',
-                        'receipt_url' => $officialReceiptUrl,
-                        'ticket_id' => null
-                    ]);
-                }
-            }
-
-            // PAYMENT FAILED - ROLLBACK EVERYTHING
-            DB::rollBack();
-            
-            $ticket = Ticket::where('order_reference', $tx_ref)->first();
-            
-            if ($ticket) {
-                // Get the user associated with this ticket
-                $user = UserInformation::find($ticket->user_information_id);
-                
-                // Delete the ticket
-                $ticket->delete();
-                
-                // If user has no other tickets and was created recently, delete them too
-                if ($user) {
-                    $hasOtherTickets = Ticket::where('user_information_id', $user->id)
-                        ->where('order_reference', '!=', $tx_ref)
-                        ->exists();
-                    
-                    if (!$hasOtherTickets) {
-                        // Check if user was created in the last 30 minutes (fresh user)
-                        $isNewUser = $user->created_at->diffInMinutes(now()) <= 30;
+                    // Create ticket in a transaction
+                    DB::beginTransaction();
+                    try {
+                        $ticket = Ticket::create([
+                            'ticket_type_id' => $pendingData['ticket_type_id'],
+                            'device_id' => $pendingData['device_id'],
+                            'order_reference' => $tx_ref,
+                            'payment_status' => 'success',
+                            'concert_id' => $pendingData['concert_id'],
+                            'price_paid' => $pendingData['price_paid'],
+                            'purchase_date' => now(),
+                            'status' => 'active',
+                            'user_information_id' => $pendingData['user_information_id'],
+                            'ticket_code' => $this->generateTicketCode(),
+                            'payment_date' => now(),
+                            'chapa_reference' => $chapaInternalRef,
+                            'receipt_url' => $officialReceiptUrl,
+                        ]);
                         
-                        if ($isNewUser) {
-                            // Delete user and their uploaded images
-                            $this->deleteUserImages($user);
-                            $user->delete();
-                            Log::info('User deleted due to payment failure:', ['user_id' => $user->id]);
-                        } else {
-                            // Existing user - just mark as inactive
-                            $user->update(['is_active' => false]);
-                            Log::info('User marked inactive due to payment failure:', ['user_id' => $user->id]);
+                        // Decrease available tickets
+                        $ticketType = TicketType::where('ticket_type_id', $pendingData['ticket_type_id'])->first();
+                        if ($ticketType && $ticketType->available_tickets > 0) {
+                            $ticketType->decrement('available_tickets');
                         }
+                        
+                        // Remove pending data from session
+                        session()->forget('pending_payment_' . $tx_ref);
+                        
+                        DB::commit();
+                    } catch (\Exception $e) {
+                        DB::rollBack();
+                        throw $e;
                     }
                 }
-                
-                Log::info('Ticket deleted due to payment failure:', [
-                    'ticket_id' => $ticket->id,
-                    'tx_ref' => $tx_ref
+
+                return view('payment_result', [
+                    'status' => 'success',
+                    'ticket' => $ticket,
+                    'ticket_id' => $ticket->ticket_code,
+                    'receipt_url' => $officialReceiptUrl,
+                    'message' => 'Payment completed successfully!'
                 ]);
             }
 
+            // PAYMENT FAILED - Clean up any pending data
+            session()->forget('pending_payment_' . $tx_ref);
+            
             return view('payment_result', [
                 'status' => 'failed',
                 'message' => 'Payment verification failed. Please try again.',
-                'ticket_id' => $ticket->ticket_code ?? null
+                'ticket_id' => null
             ]);
 
         } catch (\Exception $e) {
-            // Rollback on any exception
-            DB::rollBack();
-            
             Log::error('Callback error:', [
                 'tx_ref' => $tx_ref,
                 'message' => $e->getMessage(),
@@ -533,30 +610,6 @@ class ChapaController extends Controller
                 'message' => 'An error occurred while processing your payment. Please contact support.',
                 'error' => app()->environment('local') ? $e->getMessage() : null
             ]);
-        }
-    }
-
-    /**
-     * Delete user images from storage
-     */
-    private function deleteUserImages(UserInformation $user): void
-    {
-        try {
-            if ($user->national_id_front_image) {
-                $path = public_path($user->national_id_front_image);
-                if (file_exists($path)) {
-                    unlink($path);
-                }
-            }
-            
-            if ($user->national_id_back_image) {
-                $path = public_path($user->national_id_back_image);
-                if (file_exists($path)) {
-                    unlink($path);
-                }
-            }
-        } catch (\Exception $e) {
-            Log::error('Failed to delete user images:', ['message' => $e->getMessage()]);
         }
     }
 }
